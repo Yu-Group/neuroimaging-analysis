@@ -1,11 +1,15 @@
 import numpy as np
 
+from scipy.ndimage import label
+
 from skimage.filters import gaussian, threshold_otsu
 from skimage.morphology import ball, dilation
-from skimage.measure import label, regionprops
+from skimage.measure import regionprops_table
 from skimage.io import imread
 
 from sklearn.neighbors import KDTree
+
+from util import *
 
 def apply_threshold(im, thresh=None, min_thresh=0, gauss_kernel_sz=1, max_quant=.999, verbose=False):
     '''Filter out noise below some intensity threshold.
@@ -34,8 +38,7 @@ def apply_threshold(im, thresh=None, min_thresh=0, gauss_kernel_sz=1, max_quant=
         if thresh < min_thresh:
             thresh = min_thresh
     im_gauss = im_gauss - thresh
-    im_gau
-    ss[im_gauss < 0] = 0
+    im_gauss[im_gauss < 0] = 0
     return im_gauss
 
 def filter_small_artifacts(im, min_vox_vol=516):
@@ -50,11 +53,13 @@ def filter_small_artifacts(im, min_vox_vol=516):
     min_vox_vol: the minimum number of active voxels an artifact can have
 
     '''
-    labels, num_ccs = label(im > 0, return_num=True)
-    cc_sizes = np.array([np.sum(labels == i) for i in range(1, num_ccs+1)])
-    invalid_labels = np.arange(1, num_ccs+1)[cc_sizes <= min_vox_vol]
-    im[np.isin(labels, invalid_labels)] = 0
-    return im
+    labels, num_ccs = label(im)
+    label_ids, counts = np.unique(labels, return_counts=True)
+    invalid_labels = label_ids[counts <= min_vox_vol]
+    labels_filter = np.isin(labels, invalid_labels)
+    im[labels_filter] = 0
+    labels[labels_filter] = 0
+    return im, labels
 
 def local_max_3d(im, wdims, clear_border=False):
     '''Find local maxima in 3D.
@@ -202,27 +207,36 @@ def calc_synapse_density(im,
     px_z_ratio = px_sz_z / px_sz
 
     if np.sum(im) > 0 and np.count_nonzero(im) >= (im.size * min_nonzero_frac):
-        im_gauss = apply_threshold(im, thresh, min_thresh, gauss_kernel_sz, max_quant)
+        im_gauss, _ = call_and_timing(
+            apply_threshold, im, thresh, min_thresh, gauss_kernel_sz, max_quant, verbose=verbose,
+            _fn_name='apply_threshold', _verbose=verbose
+        )
     else:
         ValueError(f'There weren\'t enough non-zero voxels in the input volume!')
 
     if min_vox_vol > 0:
         # filter out small artifacts from the image
-        im_gauss = filter_small_artifacts(im_gauss)
+        (im_gauss, labels), _ = call_and_timing(
+            filter_small_artifacts, im_gauss, 
+            _fn_name='filter_small_artifacts', _verbose=verbose
+        )
 
     if np.sum(im_gauss > 0) == 0:
         ValueError(f'There weren\'t any non-zero voxels after thresholding!')
 
     # calculate local maxima or centroids of synapses
     if find_local_max:
-        all_max = local_max_3d(
-            im_gauss, (2*np.ceil([sigmas[0], sigmas[0], sigmas[1]])+1).astype(int),
-            clear_border=False
+        all_max, _ = call_and_timing(
+            local_max_3d, im_gauss, (2*np.ceil([sigmas[0], sigmas[0], sigmas[1]])+1).astype(int),
+            clear_border=False, _fn_name='local_max_3d', _verbose=verbose
         )
         max_ind = np.nonzero(all_max)
         puncta_ind = np.array([max_ind[0], max_ind[1], max_ind[2]]).T
     else:
-        centroids = regionprops_table(labels, properties=['centroid'])
+        centroids, _ = call_and_timing(
+            regionprops_table, labels, properties=['centroid'],
+            _fn_name='regionprops_table', _verbose=verbose
+        )
         puncta_ind = np.array([centroids['centroid-0'],
                                centroids['centroid-1'],
                                centroids['centroid-2']]).T
@@ -232,7 +246,10 @@ def calc_synapse_density(im,
 
     if find_local_max:
         # filter detections closer than 2*bw, replacing with the mean of close points
-        puncta_ind = remove_duplicates(puncta_ind, 2*bw)
+        puncta_ind, _ = call_and_timing(
+            remove_duplicates, puncta_ind, 2*bw,
+            _fn_name='remove_duplicates', _verbose=verbose
+        )
 
     # stretch out the z axis
     puncta_ind_z = puncta_ind.copy()
@@ -240,8 +257,14 @@ def calc_synapse_density(im,
 
     # get the number of puncta_ind within a radius of bw_ex of each point and
     # divide by density_vol to calculate the synapse density
-    tree = KDTree(puncta_ind_z)
-    neighbor_count = tree.query_radius(puncta_ind_z, r=bw_ex, count_only=True)
+    tree, _ = call_and_timing(
+        KDTree, puncta_ind_z,
+        _fn_name='KDTree', _verbose=verbose
+    )
+    neighbor_count, _ = call_and_timing(
+        tree.query_radius, puncta_ind_z, r=bw_ex, count_only=True,
+        _fn_name='KDTree.query_radius', _verbose=verbose
+    )
     synapse_density = neighbor_count / density_vol
 
     mask = np.zeros(im.shape)
@@ -255,7 +278,7 @@ def calc_synapse_density(im,
     out_dict = dict()
     out_dict['synapse_density_mask'] = mask
     out_dict['clean_vol'] = clean_vol
-    out_dict['synapse_ind'] = synapse_ind
+    out_dict['synapse_ind'] = puncta_ind
     out_dict['synapse_density'] = synapse_density
 
     return out_dict
