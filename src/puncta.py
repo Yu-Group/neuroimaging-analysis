@@ -32,7 +32,7 @@ def apply_threshold(im, thresh=None, min_thresh=0, gauss_kernel_sz=1, max_quant=
         # I believe 'mirror' is similar to 'symmetric' as used in ABC's code
         # see https://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.gaussian_filter.html
         im_gauss = gaussian(im_gauss, gauss_kernel_sz, mode='mirror', preserve_range=True)
-        thresh = threshold_otsu(im[np.logical_and(im > 0, im < im_max)])
+        thresh = threshold_otsu(im[im < im_max])
         if verbose:
             print(f'Otsu\'s threshold: {thresh:.3f}')
         if thresh < min_thresh:
@@ -170,7 +170,8 @@ def calc_synapse_density(im,
                          min_vox_vol = 516,
                          ball_radius = 2,
                          min_nonzero_frac = 0.1,
-                         verbose = False):
+                         verbose = False,
+                         save_filepath = None):
     '''Calculate the synapse density in a given volume. Adapted from Gokul
     Upadhyayula's MATLAB code for the same task.
 
@@ -206,7 +207,7 @@ def calc_synapse_density(im,
     struc_el = ball(ball_radius)
     px_z_ratio = px_sz_z / px_sz
 
-    if np.sum(im) > 0 and np.count_nonzero(im) >= (im.size * min_nonzero_frac):
+    if np.count_nonzero(im) >= (im.size * min_nonzero_frac):
         im_gauss, _ = call_and_timing(
             apply_threshold, im, thresh, min_thresh, gauss_kernel_sz, max_quant, verbose=verbose,
             _fn_name='apply_threshold', _verbose=verbose
@@ -280,5 +281,8 @@ def calc_synapse_density(im,
     out_dict['clean_vol'] = clean_vol
     out_dict['synapse_ind'] = puncta_ind
     out_dict['synapse_density'] = synapse_density
+    
+    if save_filepath is not None:
+        save_as_pickle(out_dict, save_filepath)
 
     return out_dict
